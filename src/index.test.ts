@@ -189,7 +189,7 @@ describe("router context window", () => {
   it("routes manual and automatic compaction through Medium", async () => {
     const medium = model("openai-codex", "gpt-5.6-terra", 372_000);
     const ultra = model("openai-codex", "gpt-5.6-sol", 372_000);
-    const { handlers, initialProvider, routerModel, ctx, agentDir } = createHarness([medium, ultra], [], "ultra");
+    const { providers, handlers, initialProvider, routerModel, ctx, agentDir } = createHarness([medium, ultra], [], "ultra");
     writeFileSync(join(agentDir, "model-router.json"), JSON.stringify({
       router: {
         modeModels: {
@@ -199,6 +199,9 @@ describe("router context window", () => {
       },
     }));
     await handlers.get("session_start")!({}, ctx);
+    expect(providers.at(-1)?.models?.[0]).toMatchObject({
+      compactionModel: "openai-codex/gpt-5.6-terra",
+    });
     const context: Context = {
       messages: [{ role: "user", content: "a very large compaction transcript", timestamp: Date.now() }],
     };

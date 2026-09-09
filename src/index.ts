@@ -131,6 +131,7 @@ export default function modelRouter(pi: ExtensionAPI) {
   const sessionKeysById = new Map<string, RouterSessionKey>();
   let memorySessionSequence = 0;
   let routerContextWindow: number | undefined;
+  let routerCompactionModel: string | undefined;
   const autocompleteContexts = new WeakSet<object>();
 
   syncRouterContextWindow(1_000_000);
@@ -293,7 +294,10 @@ export default function modelRouter(pi: ExtensionAPI) {
     }
 
     const recentModel = mostRecentConcreteModel(ctx);
-    if (recentModel) syncRouterContextWindow(recentModel.contextWindow);
+    syncRouterContextWindow(
+      recentModel?.contextWindow ?? routerContextWindow ?? 1_000_000,
+      state.cfg.modeModels.medium?.model,
+    );
 
     updateRouterStatus(ctx, state.pool.all.length === 0 ? "No routed models" : readyStatus(state.stickyRoute, state.lastDecision, state.quota));
   });
@@ -423,7 +427,7 @@ export default function modelRouter(pi: ExtensionAPI) {
         if (!auth.ok) throw new Error(auth.error);
         const planKey = quotaPlans.get(modelKey(target))?.planKey ?? modelPlanKey(target, auth);
 
-        syncRouterContextWindow(target.contextWindow);
+        syncRouterContextWindow(target.contextWindow, cfg.modeModels.medium?.model);
 
         const configuredMode = decision.cls === "model" ? undefined : cfg.modeModels[decision.cls];
         const requestedReasoning = routingReasoning(
@@ -541,7 +545,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     }
 
     state.turnSelection = { key: routingTurnKey(context), decision, selection, cacheReason, pending: true };
-    syncRouterContextWindow(selection.selected.model.contextWindow);
+    syncRouterContextWindow(selection.selected.model.contextWindow, cfg.modeModels.medium?.model);
   }
 
   function inputRoutingContext(
@@ -574,9 +578,10 @@ export default function modelRouter(pi: ExtensionAPI) {
     return undefined;
   }
 
-  function syncRouterContextWindow(contextWindow: number): void {
-    if (routerContextWindow === contextWindow) return;
+  function syncRouterContextWindow(contextWindow: number, compactionModel?: string): void {
+    if (routerContextWindow === contextWindow && routerCompactionModel === compactionModel) return;
     routerContextWindow = contextWindow;
+    routerCompactionModel = compactionModel;
     pi.registerProvider("pi-router", {
       name: "Pi Router",
       api: "pi-router-api",
@@ -591,7 +596,8 @@ export default function modelRouter(pi: ExtensionAPI) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow,
           maxTokens: 64_000,
-        },
+          ...(routerCompactionModel ? { compactionModel: routerCompactionModel } : {}),
+        } as Model<Api> & { compactionModel?: string },
       ],
       streamSimple,
     });
