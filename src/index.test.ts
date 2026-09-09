@@ -186,14 +186,14 @@ describe("router context window", () => {
     );
   });
 
-  it("routes manual and automatic compaction through Low", async () => {
-    const low = model("openai-codex", "gpt-5.6-luna", 372_000);
+  it("routes manual and automatic compaction through Medium", async () => {
+    const medium = model("openai-codex", "gpt-5.6-terra", 372_000);
     const ultra = model("openai-codex", "gpt-5.6-sol", 372_000);
-    const { handlers, initialProvider, routerModel, ctx, agentDir } = createHarness([low, ultra], [], "ultra");
+    const { handlers, initialProvider, routerModel, ctx, agentDir } = createHarness([medium, ultra], [], "ultra");
     writeFileSync(join(agentDir, "model-router.json"), JSON.stringify({
       router: {
         modeModels: {
-          low: { model: "openai-codex/gpt-5.6-luna", thinking: "high" },
+          medium: { model: "openai-codex/gpt-5.6-terra", thinking: "high" },
           ultra: { model: "openai-codex/gpt-5.6-sol", thinking: "xhigh" },
         },
       },
@@ -211,7 +211,7 @@ describe("router context window", () => {
       }
       expect(ctx.ui.setStatus).toHaveBeenLastCalledWith(
         "router",
-        expect.stringMatching(/^AUTO · last: gpt-5\.6-luna · Low · high/),
+        expect.stringMatching(/^AUTO · last: gpt-5\.6-terra · Medium · high/),
       );
     }
   });

@@ -15,7 +15,7 @@
 - Added unified one-turn `@route:<mode|provider/model>` overrides on any interactive turn. Exact-model overrides are restricted to endpoints admitted to the router pool, and the next turn returns to automatic routing.
 - Added the CLI-safe `--route ultra|provider/model` flag for print mode, where Pi consumes leading `@...` tokens as file references before extensions receive the prompt.
 - Isolated router context, selections, classifier state, quota state, and footer decisions with a composite OMP session-ID/session-file key. Provider requests resolve through the session ID, while ambiguous nested shutdown events retain state because OMP does not identify their target.
-- Routed both manual and automatic compaction through the Low capability tier, preventing large maintenance transcripts from escalating routine summarization.
+- Routed both manual and automatic compaction through the Medium capability tier, preventing large maintenance transcripts from affecting normal task classification while retaining a capable summarization model.
 - Added session-scoped sticky routing through `/route <mode|provider/model>`, with argument completion for `auto`, modes, and admitted exact models. `/route auto` and `@route:auto <prompt>` restore automatic selection, while the status line and `/auto` output identify forced routing explicitly.
 
 ## 0.2.1 - 2026-07-30
