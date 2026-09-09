@@ -40,6 +40,7 @@ import {
   estimateContextTokens,
   frontierChain,
   lastUserText,
+  loadUserRouterConfig,
   matchesModelFilter,
   mergeClassifierConfig,
   modelKey,
@@ -133,8 +134,8 @@ export default function modelRouter(pi: ExtensionAPI) {
   let routerContextWindow: number | undefined;
   let routerCompactionModel: string | undefined;
   const autocompleteContexts = new WeakSet<object>();
-
-  syncRouterContextWindow(1_000_000);
+  const initialRouterConfig = loadUserRouterConfig();
+  syncRouterContextWindow(1_000_000, initialRouterConfig.modeModels.medium?.model);
 
   pi.registerFlag("route", {
     type: "string",

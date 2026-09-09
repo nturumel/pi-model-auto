@@ -81,6 +81,7 @@ function createHarness(target: Model<Api> | Model<Api>[], branch: unknown[] = []
     sessionManager: { getSessionId: () => sessionId, getBranch: () => branch },
     getSystemPrompt: () => "",
     isProjectTrusted: () => false,
+    setModel: async () => true,
     ui: { notify: vi.fn(), setStatus: vi.fn(), addAutocompleteProvider: vi.fn() },
   } as unknown as ExtensionContext;
 
