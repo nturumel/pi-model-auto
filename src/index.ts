@@ -386,7 +386,7 @@ export default function modelRouter(pi: ExtensionAPI) {
             cachedSelection?.key === turnKey &&
             cachedSelection.decision.cls !== "model");
         const currentClassifier = !reuseTurnSelection && !options?.codexCompaction && !shouldReuseTurnSelection(context)
-          ? await classifyCurrentTurnWhenUseful(state, context, options, quotaPlans)
+          ? await classifyCurrentTurnWhenUseful(state, context)
           : undefined;
         const decision = reuseTurnSelection
           ? cachedSelection!.decision
@@ -527,7 +527,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     const quotaPlans = cfg.quota.enabled && !requestRoute ? await resolveQuotaPlans(ctx, pool) : new Map();
     const currentClassifier = requestRoute
       ? undefined
-      : await classifyCurrentTurnWhenUseful(state, context, undefined, quotaPlans);
+      : await classifyCurrentTurnWhenUseful(state, context);
     const decision = decide(context, undefined, requestRoute, cfg, currentClassifier ? { classify: () => currentClassifier } : undefined);
     const selectionPool = decision.cls === "model"
       ? pool
@@ -607,10 +607,8 @@ export default function modelRouter(pi: ExtensionAPI) {
   async function classifyCurrentTurnWhenUseful(
     state: RouterSessionState,
     context: Context,
-    options: SimpleStreamOptions | undefined,
-    quotaPlans: QuotaPlanLookup,
   ): Promise<ClassificationResult | undefined> {
-    const { ctx, cfg, pool, quota } = state;
+    const { ctx, cfg } = state;
     if (state.forcedRoute || !cfg.classifier.enabled) return undefined;
     if (cfg.classifier.strategy === "local") {
       if (contextHasImageForClassifier(context)) {
@@ -630,19 +628,6 @@ export default function modelRouter(pi: ExtensionAPI) {
         return undefined;
       }
     }
-    const heuristicDecision = decide(context, options, undefined, cfg);
-    const selectionPool = repriceForTimeOfDay(
-      usablePoolForQuota(ctx, cfg, pool, quota, Date.now(), quotaPlans),
-      new Date().getHours(),
-    );
-    const fresh = selectModel(heuristicDecision, selectionPool, context, options, cfg);
-    const draft = cacheAwareSelect(fresh, state.routingState, selectionPool, context, cfg).selection;
-    const previousSelectionKey = state.turnSelection && !state.turnSelection.pending
-      ? modelKey(state.turnSelection.selection.selected.model)
-      : undefined;
-    const previousKey = state.routingState.lease?.modelKey ?? previousSelectionKey;
-
-    if (previousKey && modelKey(draft.selected.model) === previousKey) return undefined;
     return classifyCurrentTurn(state, context);
   }
 
@@ -650,13 +635,20 @@ export default function modelRouter(pi: ExtensionAPI) {
     const { ctx, cfg, pool } = state;
     const turn = userTurnIndex(context);
     const candidate = selectClassifierModel(repriceForTimeOfDay(pool, new Date().getHours()), cfg, state.classifierState, turn);
-    if (!candidate) return undefined;
+    if (!candidate) {
+      if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), classifierError: "configured model unavailable" });
+      return undefined;
+    }
 
     const key = modelKey(candidate.model);
+    const classifierReasoning = candidate.model.reasoning
+      ? clampThinkingLevel(candidate.model, "minimal")
+      : "off";
     try {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(candidate.model);
       if (!auth.ok) {
         recordClassifierFailure(state.classifierState, key, turn, cfg);
+        if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), classifierError: "classifier authentication unavailable", chosen: key });
         return undefined;
       }
 
@@ -664,7 +656,7 @@ export default function modelRouter(pi: ExtensionAPI) {
         apiKey: auth.apiKey,
         headers: auth.headers,
         env: auth.env,
-        reasoning: candidate.model.reasoning ? "minimal" : undefined,
+        reasoning: classifierReasoning === "off" ? undefined : classifierReasoning,
         maxTokens: 80,
         temperature: 0,
         timeoutMs: cfg.classifier.timeoutMs,
@@ -673,13 +665,15 @@ export default function modelRouter(pi: ExtensionAPI) {
       const parsed = parseClassificationOutput(assistantText(message));
       if (!parsed) {
         recordClassifierFailure(state.classifierState, key, turn, cfg);
+        if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), classifierError: "invalid classifier response", chosen: key, response: assistantText(message) });
         return undefined;
       }
 
       recordClassifierSuccess(state.classifierState, key);
       return parsed;
-    } catch {
+    } catch (error) {
       recordClassifierFailure(state.classifierState, key, turn, cfg);
+      if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), classifierError: String(error), chosen: key });
       return undefined;
     }
   }
