@@ -17,6 +17,7 @@
 - Isolated router context, selections, classifier state, quota state, and footer decisions with a composite OMP session-ID/session-file key. Provider requests resolve through the session ID, while ambiguous nested shutdown events retain state because OMP does not identify their target.
 - Declared the Medium capability model as Pi Router's compaction target, preserving normal provider-native compaction while isolating maintenance from task routing.
 - Added session-scoped sticky routing through `/route <mode|provider/model>`, with argument completion for `auto`, modes, and admitted exact models. `/route auto` and `@route:auto <prompt>` restore automatic selection, while the status line and `/auto` output identify forced routing explicitly.
+- Shared router session state across per-session extension factory bindings so OMP subagent provider rebinding cannot orphan or misroute an active parent request.
 
 ## 0.2.1 - 2026-07-30
 

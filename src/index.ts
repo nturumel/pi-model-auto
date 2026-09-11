@@ -127,10 +127,37 @@ interface RouterSessionState {
   localClassifierErrorShown: boolean;
 }
 
+interface RouterProcessState {
+  sessions: Map<RouterSessionKey, RouterSessionState>;
+  sessionKeysById: Map<string, RouterSessionKey>;
+  memorySessionSequence: number;
+}
+
+const ROUTER_PROCESS_STATE_KEY = "__pi_model_auto_router_process_state_v1__" as const;
+
+type RouterGlobal = typeof globalThis & {
+  [ROUTER_PROCESS_STATE_KEY]?: RouterProcessState;
+};
+
+function getRouterProcessState(): RouterProcessState {
+  const host = globalThis as RouterGlobal;
+  const existing = host[ROUTER_PROCESS_STATE_KEY];
+  if (existing) return existing;
+
+  const created: RouterProcessState = {
+    sessions: new Map(),
+    sessionKeysById: new Map(),
+    memorySessionSequence: 0,
+  };
+  host[ROUTER_PROCESS_STATE_KEY] = created;
+  return created;
+}
+
+
 export default function modelRouter(pi: ExtensionAPI) {
-  const sessions = new Map<RouterSessionKey, RouterSessionState>();
-  const sessionKeysById = new Map<string, RouterSessionKey>();
-  let memorySessionSequence = 0;
+  const processState = getRouterProcessState();
+  const { sessions, sessionKeysById } = processState;
+  const ownedSessions = new Map<RouterSessionKey, string>();
   let routerContextWindow: number | undefined;
   let routerCompactionModel: string | undefined;
   const autocompleteContexts = new WeakSet<object>();
@@ -225,7 +252,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     const quota = new QuotaState(cfg.quota);
     quota.load(quotaStateFile());
     const sessionId = ctx.sessionManager.getSessionId();
-    const key = routerSessionKey(ctx, ++memorySessionSequence);
+    const key = routerSessionKey(ctx, ++processState.memorySessionSequence);
     const state: RouterSessionState = {
       ctx,
       cfg,
@@ -238,9 +265,13 @@ export default function modelRouter(pi: ExtensionAPI) {
       localClassifierErrorShown: false,
     };
     const previousKey = sessionKeysById.get(sessionId);
-    if (previousKey) sessions.delete(previousKey);
+    if (previousKey) {
+      sessions.delete(previousKey);
+      ownedSessions.delete(previousKey);
+    }
     sessions.set(key, state);
     sessionKeysById.set(sessionId, key);
+    ownedSessions.set(key, sessionId);
     if (!autocompleteContexts.has(ctx)) {
       autocompleteContexts.add(ctx);
       ctx.ui.addAutocompleteProvider((current) => ({
@@ -318,9 +349,16 @@ export default function modelRouter(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    // OMP's shared extension runner can emit a nested session's shutdown with the parent context.
-    // The event carries no target session ID, so deleting by ctx would invalidate the parent.
-    // Session state lives only for this extension runtime and repeated starts replace the same ID.
+    // A factory normally owns one session. If a shared runner reports several starts, the
+    // shutdown event does not identify its target; retaining them is safer than deleting a parent.
+    if (ownedSessions.size !== 1) return;
+
+    const entry = ownedSessions.entries().next().value;
+    if (!entry) return;
+    const [key, sessionId] = entry;
+    ownedSessions.clear();
+    sessions.delete(key);
+    if (sessionKeysById.get(sessionId) === key) sessionKeysById.delete(sessionId);
   });
 
   pi.on("input", async (event, ctx) => {

@@ -400,4 +400,31 @@ describe("router context window", () => {
       expect.stringMatching(/^AUTO · last: gpt-5\.6-sol/),
     );
   });
+
+  it("keeps parent state visible through a provider rebound by a starting child", async () => {
+    const parent = createHarness([], [], undefined, "parent-rebound");
+    await parent.handlers.get("session_start")!({}, parent.ctx);
+
+    // OMP rebinds the process-global custom API to a fresh extension factory before
+    // that child's session_start. The replacement handler must still see its parent.
+    const child = createHarness([], [], undefined, "child-rebound");
+    const context: Context = {
+      messages: [{ role: "user", content: "continue parent work", timestamp: Date.now() }],
+    };
+    const events = [];
+    for await (const event of child.initialProvider.streamSimple!(
+      child.routerModel,
+      context,
+      { sessionId: "parent-rebound" },
+    )) {
+      events.push(event);
+    }
+
+    expect(events.some((event) =>
+      event.type === "error" && event.error.errorMessage?.includes("no authenticated models")
+    )).toBe(true);
+
+    await child.handlers.get("session_shutdown")!({}, child.ctx);
+    await parent.handlers.get("session_shutdown")!({}, parent.ctx);
+  });
 });
