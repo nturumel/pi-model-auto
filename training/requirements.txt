@@ -1,0 +1,13 @@
+accelerate==1.10.1
+datasets==4.5.0
+huggingface_hub==0.36.2
+numpy==2.0.2
+onnx==1.19.1
+onnxruntime==1.19.2
+optimum==1.27.0
+pandas==2.3.3
+scikit-learn==1.6.1
+sentence-transformers==5.1.2
+tokenizers==0.21.4
+torch==2.8.0
+transformers==4.53.3

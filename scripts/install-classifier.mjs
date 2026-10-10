@@ -7,13 +7,14 @@ import { finished } from "node:stream/promises";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const modelRoot = join(packageRoot, "models", "complexity-classifier");
-const releaseBase = "https://github.com/nihar-oracle/pi-model-auto/releases/download/classifier-v1";
+// classifier-v2: all-MiniLM-L6-v2 fine-tuned with training/train.py, per-channel int8 (23 MB).
+const releaseBase = "https://github.com/nturumel/pi-model-auto/releases/download/classifier-v2";
 const assets = [
-  { name: "config.json", path: "config.json", sha256: "e2649f77e0c730e0e73a953efb0cacc390a5173a388944421bf8c66cde1905cc" },
-  { name: "tokenizer.json", path: "tokenizer.json", sha256: "8eb3950859984c5e7062c5e94d8d8026df86a527a5b6015f1d06d1a89cebd5f4" },
-  { name: "tokenizer_config.json", path: "tokenizer_config.json", sha256: "7f804ebac613b8db6f173520817471f015e987d544c18bd9ef44654080ec9337" },
-  { name: "special_tokens_map.json", path: "special_tokens_map.json", sha256: "ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049" },
-  { name: "model_quantized.onnx", path: "onnx/model_quantized.onnx", sha256: "fc548045d5ce5d51c74b1b82b0c95daa511575135c9c49f9652b7a9b0a383343" },
+  { name: "config.json", path: "config.json", sha256: "1b047cd031360252e9926e895bc439edea6455eebd71542302f3e39cf1e97108" },
+  { name: "tokenizer.json", path: "tokenizer.json", sha256: "79ea220416a57ca8acdf069d71875d5d2ddadef66021aeb6c120a7c546c04344" },
+  { name: "tokenizer_config.json", path: "tokenizer_config.json", sha256: "20fc02202d48143b228b3acbd9507eb33096bef2b705f2106148eaa6d4c6f134" },
+  { name: "special_tokens_map.json", path: "special_tokens_map.json", sha256: "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a" },
+  { name: "model_quantized.onnx", path: "onnx/model_quantized.onnx", sha256: "c09ee80d433403b597f0c06fe2d491682e9690ab6c0c7cae0fce517fa51ea582" },
 ];
 
 async function digest(path) {

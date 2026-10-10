@@ -185,27 +185,35 @@ The classifier runs locally and makes no provider call.
 
 ### Classifier and Coarse Auto Detection
 
-The default classifier is a pinned, quantized
-[`anasnassar/llm-query-complexity-classifier`](https://huggingface.co/anasnassar/llm-query-complexity-classifier)
-ModernBERT model. Installation downloads the 143.6 MiB ONNX model and tokenizer from this fork's
-`classifier-v1` release, verifies fixed SHA-256 checksums, and fails the install on any mismatch.
-Inference disables remote model loading.
+The default classifier is
+[`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+(22.7M parameters, Apache-2.0) fine-tuned with [`training/train.py`](training/train.py) on the
+Apache-2.0 [`llm-query-complexity-benchmark`](https://huggingface.co/datasets/anasnassar/llm-query-complexity-benchmark)
+train split, then exported to ONNX with per-channel int8 weights (23 MB). Installation downloads the
+model and tokenizer from this fork's `classifier-v2` release, verifies fixed SHA-256 checksums, and
+fails the install on any mismatch. Inference is fully local and disables remote model loading. A
+classifier directory that ships `onnx/model.onnx` is loaded in fp32; otherwise `model_quantized.onnx`.
 
-Only the latest user message is classified. The model is warmed when the Pi session starts and input
-is capped at the upstream training length of 128 tokens. Its `LOW`, `MEDIUM`, and `HIGH` labels map
-directly to the router's `low`, `medium`, and `high` modes; it never guesses `ultra`. Image turns route
-to `high`, and predictions below the training-calibrated 0.45 confidence floor fail upward to `high`.
-One-turn overrides and tool-call continuations do not run another classification.
+Only the latest user message is classified, after removing host-injected `<system-reminder>` blocks.
+The model is warmed when the Pi session starts, input is capped at 128 tokens, and the session is
+released on shutdown. Its `LOW`, `MEDIUM`, and `HIGH` labels map directly to the router's `low`,
+`medium`, and `high` modes; it never guesses `ultra`. Image turns route to `high`, and predictions
+below the 0.45 confidence floor fail upward to `high`. One-turn overrides and tool-call continuations
+do not run another classification.
 
-On the pinned 1,200-query public
-[`llm-query-complexity-benchmark`](https://huggingface.co/datasets/anasnassar/llm-query-complexity-benchmark)
-test split, the local classifier measured 0.591 macro-F1, 59.6% accuracy, 63.8% High recall, and 4.0%
-severe under-routing on an Apple M1 Pro. Short-query steady-state latency measured 16.7 ms p50 and
-49.2 ms p95; model loading measured 576.7 ms. The final process RSS delta was 554.7 MiB, with
-143.6 MiB stored on disk. On LLMRouterBench LiveCodeBench, routing between
-DeepSeek V3.1 Terminus and GPT-5 raised accuracy from 67.3% for the heuristic/weak baseline to 76.8%,
-while using GPT-5 for 48.0% of prompts. Long coding-prompt classifier latency measured 81.9 ms p50 and
-182.3 ms p95. These are local measurements, not upstream claims.
+Measured with [`training/bench.py`](training/bench.py) on the 1,200-query benchmark test split and on
+the 500 SWE-bench Verified issues (human difficulty: `<15 min` = low, `15 min–1 h` = medium, longer = high):
+
+| classifier | test macro-F1 | High recall | severe under-route | SWE issues sent to `low` | p50 / p95 (Bun) | disk | process RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MiniLM-L6 fine-tune, int8 per-channel (default) | 0.663 (3 seeds: 0.668 ± 0.007) | 69.8% | 0.7% | 0.0% | 1.1 / 1.7 ms | 23 MB | ~180 MB |
+| ModernBERT `classifier-v1`, int8 (previous) | 0.575 | 62.5% | 4.6% | 4.4% | 6.7 / 10 ms | 151 MB | ~390 MB |
+
+Larger encoders (Ettin 68M/150M, ModernBERT-base, granite-small-r2), frozen embeddings with logistic
+regression, and zero-shot local LLMs (Qwen3 0.6B/1.7B, Qwen2.5 1.5B) all scored lower or cost more;
+zero-shot LLMs took 240–370 ms per prompt and collapsed to a single label. No prompt-only classifier
+separated short from long SWE-bench fixes (ROC-AUC ≈ 0.55), so treat coding-task difficulty as
+unresolved: the router's job there is to avoid sending real repository work to `low`, which it does.
 
 #### Heuristic fallback
 

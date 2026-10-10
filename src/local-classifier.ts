@@ -1,4 +1,6 @@
 import { env, pipeline, type TextClassificationPipeline } from "@huggingface/transformers";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type LocalComplexityLabel = "LOW" | "MEDIUM" | "HIGH";
@@ -18,7 +20,9 @@ function classifier() {
     fileURLToPath(new URL("../models/complexity-classifier", import.meta.url));
   env.allowRemoteModels = false;
   env.allowLocalModels = true;
-  classifierPromise = pipeline("text-classification", modelRoot, { dtype: "q8" }).catch((error) => {
+  // Small encoders ship full precision (no int8 accuracy loss); larger ones ship model_quantized.onnx.
+  const dtype = existsSync(join(modelRoot, "onnx", "model.onnx")) ? "fp32" : "q8";
+  classifierPromise = pipeline("text-classification", modelRoot, { dtype }).catch((error) => {
     classifierPromise = undefined;
     throw error;
   });
@@ -29,9 +33,28 @@ export async function warmLocalClassifier(): Promise<void> {
   await classifier();
 }
 
+// Release the ONNX session once the last router session shuts down.
+export async function disposeLocalClassifier(): Promise<void> {
+  const pending = classifierPromise;
+  classifierPromise = undefined;
+  if (!pending) return;
+  try {
+    await (await pending).dispose();
+  } catch {
+    // A failed load or double dispose leaves nothing to release.
+  }
+}
+
+// Hosts such as omp prepend <system-reminder> blocks (date, cwd) to the user message. They are not
+// part of the request, and with a 128-token window they shift the label and truncate the real prompt.
+export function classifierInput(text: string): string {
+  const stripped = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  return stripped || text;
+}
+
 export async function classifyLocally(text: string): Promise<LocalClassification> {
   const run = await classifier();
-  const rows = await run(text, { top_k: 3 }) as unknown as PipelineRow[];
+  const rows = await run(classifierInput(text), { top_k: 3 }) as unknown as PipelineRow[];
   const scores: Record<LocalComplexityLabel, number> = { LOW: 0, MEDIUM: 0, HIGH: 0 };
   for (const row of rows) {
     const label = row.label.toUpperCase() as LocalComplexityLabel;
