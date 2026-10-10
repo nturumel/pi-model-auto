@@ -73,6 +73,8 @@ import {
 import {
   classifyLocally,
   warmLocalClassifier,
+  disposeLocalClassifier,
+  classifierInput,
   type LocalComplexityLabel,
 } from "./local-classifier.ts";
 import { QuotaState, buildPlanKey, filterPoolByQuota, type PlanState } from "./quota.ts";
@@ -359,6 +361,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     ownedSessions.clear();
     sessions.delete(key);
     if (sessionKeysById.get(sessionId) === key) sessionKeysById.delete(sessionId);
+    if (sessions.size === 0) await disposeLocalClassifier();
   });
 
   pi.on("input", async (event, ctx) => {
@@ -653,7 +656,18 @@ export default function modelRouter(pi: ExtensionAPI) {
         return { mode: "high", reason: "local classifier: image safety fallback" };
       }
       try {
-        const result = await classifyLocally(lastUserText(context));
+        const text = lastUserText(context);
+        const startedAt = performance.now();
+        const result = await classifyLocally(text);
+        if (cfg.log) {
+          appendJsonLine(ctx, {
+            ts: new Date().toISOString(),
+            localClassifier: result.label,
+            scores: result.scores,
+            latencyMs: Math.round(performance.now() - startedAt),
+            classifiedChars: classifierInput(text).length,
+          });
+        }
         return {
           mode: LOCAL_MODE[result.label],
           reason: `local classifier: ${result.label.toLowerCase()} (${result.scores[result.label].toFixed(3)})`,
