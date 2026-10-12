@@ -230,6 +230,8 @@ export interface Decision {
   modeBucket: number;
   requestedProfile?: ModelProfile;
   reason?: string;
+  /** Set when an explicit route (@route, --route, /route, compaction pin) produced this decision. */
+  forced?: boolean;
 }
 
 export interface ClassificationResult {
@@ -788,7 +790,7 @@ export function decide(
   cfg: RouterConfig,
   classifier: TaskClassifier = HEURISTIC_CLASSIFIER,
 ): Decision {
-  if (forced && "model" in forced) return { cls: "model", score: 1, chosen: forced.model, modeBucket: 3, reason: "forced model" };
+  if (forced && "model" in forced) return { cls: "model", score: 1, chosen: forced.model, modeBucket: 3, reason: "forced model", forced: true };
   if (forced && "mode" in forced) {
     const modeBucket = CAPABILITY_MODE_ORDER.indexOf(forced.mode);
     return {
@@ -798,6 +800,7 @@ export function decide(
       modeBucket,
       requestedProfile: inferFallbackProfile(context),
       reason: `forced ${forced.mode}`,
+      forced: true,
     };
   }
 

@@ -488,11 +488,17 @@ describe("in-session escalation", () => {
     await handlers.get("session_start")!({}, ctx);
     await handlers.get("input")!({ source: "interactive", text: "@route:low fix the failing test" }, ctx);
     const messages: any[] = [{ role: "user", content: "fix the failing test", timestamp: Date.now() }];
+    // Step through the turn as Pi does: the one-turn route is consumed by the first request, and the
+    // tool-call continuations reuse the turn's forced decision. Escalation must not override it.
+    const step = async () => {
+      for await (const _event of initialProvider.streamSimple!(routerModel, { messages: [...messages] } as Context, { sessionId })) {
+        // Consume the stream.
+      }
+    };
+    await step();
     for (const [i, what] of ["parser", "lexer", "emitter", "loader"].entries()) {
       messages.push(toolCall(`c${i}`), failure(`c${i}`, what));
-    }
-    for await (const _event of initialProvider.streamSimple!(routerModel, { messages } as Context, { sessionId })) {
-      // Consume the stream.
+      await step();
     }
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("escalating"), "info");
     expect(lastStatus(ctx)).toMatch(/cheap/);

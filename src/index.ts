@@ -661,7 +661,9 @@ export default function modelRouter(pi: ExtensionAPI) {
     compaction: boolean,
     turnKey: string,
   ): Decision {
-    if (requestRoute || compaction || decision.cls === "model") return decision;
+    // decision.forced also covers tool-call continuations that reuse a forced decision after the
+    // one-turn route itself has been consumed by the turn's first request.
+    if (requestRoute || compaction || decision.forced || decision.cls === "model") return decision;
     const { ctx, cfg } = state;
     const result = updateEscalation(state.escalation, context, cfg.escalation, decision.cls, cfg.modeModels, turnKey);
     if (result.reset && cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), escalation: "reset" });
