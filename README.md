@@ -258,6 +258,42 @@ cooldown and heuristic fallback.
 One user turn keeps one model, including tool-call continuations. Automatic routing also avoids
 quota-cooled plans and avoids switching away from a useful warm cache when the switch is not worth it.
 
+### In-Session Escalation
+
+Prompt-only routing cannot see whether the cheap model is coping, so the router also reads the
+session itself (no model call, under 1 ms per request) and raises the tier when a task is struggling:
+
+- 3 or more failing tool results in one user turn: tool errors, or failing tests/builds in shell output
+- the same error repeating within a turn (numbers are normalised, so re-runs of one failure match)
+- a follow-up such as "still broken", "that's wrong" or "same error"
+- more than 25 agent steps in one user turn
+
+Escalation moves to the next mode that uses a different configured model (with Haiku / Sonnet / Opus
+pinned to low / medium+high / ultra: low → high → ultra), at most one step per user turn. It applies
+mid-turn, holds for 3 quiet user turns, then resets; `/route auto` resets it immediately. Explicit
+`@route:`, `--route` and `/route` choices and compaction are never overridden. The state lives in the
+running Pi session, so a new process continuing a session (`-c`) starts from the classifier again.
+
+On the 500 SWE-bench Verified issues run with one agent (mini-SWE-agent v2.0.0, Feb 2026), Claude
+Haiku 4.5 resolved 66.6% and Sonnet 4.5 71.4%; "Haiku first, Sonnet when it fails" reaches at most 74.0%
+while using Sonnet on a third of tasks. That ceiling assumes every failure is noticed.
+
+```jsonc
+{
+  "router": {
+    "escalation": {
+      "enabled": true,       // false turns escalation off
+      "toolFailures": 3,     // failing tool results per user turn; 0 disables this trigger
+      "repeatedError": true,
+      "userFeedback": true,
+      "maxSteps": 25,        // agent steps per user turn; 0 disables this trigger
+      "decayTurns": 3,       // quiet user turns before the floor resets; 0 keeps it for the session
+      "ceiling": "ultra"     // highest mode escalation may reach
+    }
+  }
+}
+```
+
 ### Context Window and Compaction
 
 Pi displays context usage and decides when to compact from the selected `pi-router/auto` model. The router keeps that virtual model's `contextWindow` synchronized with the concrete model selected for the current turn. It preselects the route before Pi's preflight compaction check, refreshes the value again when the provider request starts, and restores the most recent concrete model's window when resuming a session.
@@ -276,6 +312,7 @@ As a result, a turn routed to a 272K model displays and compacts against 272K; a
 | `cacheAware` | Keep warm prompt caches when switching is not worth it. Enabled by default. |
 | `quota` | Skip cooled-down plans after rate-limit headers or `429`. Enabled by default. |
 | `classifier` | Select `"local"` (default), `"llm"`, or `"off"`. Object tuning remains available for LLM timeout/cooldown settings. |
+| `escalation` | Raise the tier when the session shows the model struggling (see In-Session Escalation). |
 | `classifierModel` | Pin the optional LLM classifier to an exact provider/model or variant; setting it selects the LLM strategy. |
 | `weights` | Language-neutral difficulty-scoring weights. Advanced. |
 | `log` | Append routing decisions to `.pi/router.log`. |
