@@ -78,6 +78,7 @@ import {
   type LocalComplexityLabel,
 } from "./local-classifier.ts";
 import { QuotaState, buildPlanKey, filterPoolByQuota, type PlanState } from "./quota.ts";
+import { createEscalationState, isAbove, modeIndex, updateEscalation, type EscalationState } from "./escalation.ts";
 
 type ForcedRoute = { mode: CapabilityMode } | { model: string };
 type ResolvedAuth = { ok: true; apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> };
@@ -127,6 +128,7 @@ interface RouterSessionState {
   routingState: RoutingState;
   classifierState: ClassifierState;
   localClassifierErrorShown: boolean;
+  escalation: EscalationState;
 }
 
 interface RouterProcessState {
@@ -229,6 +231,7 @@ export default function modelRouter(pi: ExtensionAPI) {
         state.stickyRoute = undefined;
         state.forcedRoute = undefined;
         state.turnSelection = undefined;
+        state.escalation = createEscalationState();
         updateRouterStatus(ctx, readyStatus(undefined, state.lastDecision, state.quota));
         ctx.ui.notify("Pi Router: sticky route cleared; automatic routing restored.", "info");
         return;
@@ -265,6 +268,7 @@ export default function modelRouter(pi: ExtensionAPI) {
       routingState: createRoutingState(),
       classifierState: createClassifierState(),
       localClassifierErrorShown: false,
+      escalation: createEscalationState(),
     };
     const previousKey = sessionKeysById.get(sessionId);
     if (previousKey) {
@@ -429,14 +433,16 @@ export default function modelRouter(pi: ExtensionAPI) {
         const currentClassifier = !reuseTurnSelection && !options?.codexCompaction && !shouldReuseTurnSelection(context)
           ? await classifyCurrentTurnWhenUseful(state, context)
           : undefined;
-        const decision = reuseTurnSelection
+        const classified = reuseTurnSelection
           ? cachedSelection!.decision
           : decide(context, options, requestRoute, cfg, currentClassifier ? { classify: () => currentClassifier } : undefined);
+        const decision = applyEscalation(state, context, classified, requestRoute, Boolean(options?.codexCompaction), turnKey);
+        const reuse = reuseTurnSelection && decision === classified;
         const statusRoute = options?.codexCompaction ? undefined : state.stickyRoute;
         const oneTurnRoute = options?.codexCompaction ? undefined : state.forcedRoute;
         // Re-evaluate time-of-day shadow-price windows once per turn (clock read here, pick reused
         // within the turn), so a window boundary like GLM 14:00–18:00 takes effect without a /reload.
-        const selectionPool = decision.cls === "model" || reuseTurnSelection
+        const selectionPool = decision.cls === "model" || reuse
           ? pool
           : repriceForTimeOfDay(
             requestRoute ? pool : usablePoolForQuota(ctx, cfg, pool, quota, Date.now(), quotaPlans),
@@ -445,7 +451,7 @@ export default function modelRouter(pi: ExtensionAPI) {
 
         let selection: Selection;
         let cacheReason: CacheReason | undefined = preselectedTurn ? cachedSelection?.cacheReason : undefined;
-        if (reuseTurnSelection) {
+        if (reuse) {
           const reuseReason = preselectedTurn ? "preselected before compaction" : "reused within user turn";
           selection = { ...cachedSelection!.selection, reason: `${cachedSelection!.selection.reason}; ${reuseReason}` };
         } else {
@@ -569,7 +575,8 @@ export default function modelRouter(pi: ExtensionAPI) {
     const currentClassifier = requestRoute
       ? undefined
       : await classifyCurrentTurnWhenUseful(state, context);
-    const decision = decide(context, undefined, requestRoute, cfg, currentClassifier ? { classify: () => currentClassifier } : undefined);
+    const classified = decide(context, undefined, requestRoute, cfg, currentClassifier ? { classify: () => currentClassifier } : undefined);
+    const decision = applyEscalation(state, context, classified, requestRoute, false, routingTurnKey(context));
     const selectionPool = decision.cls === "model"
       ? pool
       : repriceForTimeOfDay(
@@ -643,6 +650,33 @@ export default function modelRouter(pi: ExtensionAPI) {
       ],
       streamSimple,
     });
+  }
+
+  /** Raise the decision to the session's escalation floor; explicit routes and compaction are left alone. */
+  function applyEscalation(
+    state: RouterSessionState,
+    context: Context,
+    decision: Decision,
+    requestRoute: ForcedRoute | undefined,
+    compaction: boolean,
+    turnKey: string,
+  ): Decision {
+    if (requestRoute || compaction || decision.cls === "model") return decision;
+    const { ctx, cfg } = state;
+    const result = updateEscalation(state.escalation, context, cfg.escalation, decision.cls, cfg.modeModels, turnKey);
+    if (result.reset && cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), escalation: "reset" });
+    if (result.raised) {
+      const { from, to, reason } = result.raised;
+      ctx.ui.notify(`Pi Router: escalating ${from} → ${to} (${reason}).`, "info");
+      if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), escalation: { from, to, reason } });
+    }
+    if (!isAbove(result.floor, decision.cls)) return decision;
+    return {
+      ...decision,
+      cls: result.floor,
+      modeBucket: modeIndex(result.floor),
+      reason: `escalated to ${result.floor}${result.raised ? `: ${result.raised.reason}` : " (held)"}`,
+    };
   }
 
   async function classifyCurrentTurnWhenUseful(
@@ -940,6 +974,7 @@ function loadConfig(ctx: ExtensionContext): RouterConfig {
         modelOverrides: { ...cfg.modelOverrides, ...(router.modelOverrides ?? router.overrides ?? {}) },
         cacheAware: { ...cfg.cacheAware, ...(router.cacheAware ?? {}) },
         quota: { ...cfg.quota, ...(router.quota ?? {}) },
+        escalation: { ...cfg.escalation, ...(router.escalation ?? {}) },
         classifierModel: typeof router.classifierModel === "string" ? router.classifierModel : cfg.classifierModel,
         classifier: enableClassifierForPinnedModel(
           mergeClassifierConfig(router.classifier, cfg.classifier),

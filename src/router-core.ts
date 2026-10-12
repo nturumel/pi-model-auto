@@ -174,9 +174,44 @@ export interface RouterConfig {
     minTurnsBetweenSwitches: number;
   };
   quota: QuotaConfig;
+  /** In-session escalation to a stronger tier when the session shows the current model struggling. */
+  escalation: EscalationConfig;
   classifier: ClassifierConfig;
   /** Explicit provider/model or variant ref for the optional LLM classifier. Empty means choose the cheapest eligible pool model. */
   classifierModel?: string;
+}
+
+export interface EscalationConfig {
+  enabled: boolean;
+  /** Failing tool results within one user turn before escalating; 0 disables. */
+  toolFailures: number;
+  /** Escalate when the same error text appears twice within one user turn. */
+  repeatedError: boolean;
+  /** Escalate on follow-ups such as "still broken" or "that's wrong". */
+  userFeedback: boolean;
+  /** Assistant steps within one user turn before escalating; 0 disables. */
+  maxSteps: number;
+  /** Quiet user turns (no new signal) before the escalated floor resets; 0 keeps it for the session. */
+  decayTurns: number;
+  /** Highest mode escalation may reach. */
+  ceiling: CapabilityMode;
+}
+
+export const DEFAULT_ESCALATION: EscalationConfig = {
+  enabled: true,
+  toolFailures: 3,
+  repeatedError: true,
+  userFeedback: true,
+  maxSteps: 25,
+  decayTurns: 3,
+  ceiling: "ultra",
+};
+
+// Hosts such as omp prepend <system-reminder> blocks (date, cwd) to the user message. They are not
+// part of the request, and with a 128-token window they shift the label and truncate the real prompt.
+export function stripHostReminders(text: string): string {
+  const stripped = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  return stripped || text;
 }
 
 export interface ClassifierConfig {
@@ -288,6 +323,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
     minTurnsBetweenSwitches: 1,
   },
   quota: DEFAULT_QUOTA_CONFIG,
+  escalation: DEFAULT_ESCALATION,
   classifier: {
     enabled: true,
     strategy: "local",
@@ -341,6 +377,7 @@ function mergeRouterConfig(raw: unknown): RouterConfig {
     willingness: { ...baseWillingness, ...(router.willingness ?? {}) },
     cacheAware: { ...DEFAULT_CONFIG.cacheAware, ...(router.cacheAware ?? {}) },
     quota: { ...DEFAULT_CONFIG.quota, ...(router.quota ?? {}) },
+    escalation: { ...DEFAULT_CONFIG.escalation, ...(router.escalation ?? {}) },
     classifier,
     classifierModel,
   };
