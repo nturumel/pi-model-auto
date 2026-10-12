@@ -428,3 +428,79 @@ describe("router context window", () => {
     await parent.handlers.get("session_shutdown")!({}, parent.ctx);
   });
 });
+
+describe("in-session escalation", () => {
+  let sessionCounter = 0;
+  function escalationHarness() {
+    const targets = [model("acme", "cheap", 200_000), model("acme", "mid", 400_000), model("acme", "top", 400_000)];
+    const sessionId = `escalation-${++sessionCounter}`;
+    const harness = { ...createHarness(targets, [], undefined, sessionId), sessionId };
+    writeFileSync(join(harness.agentDir, "model-router.json"), JSON.stringify({ router: {
+      classifier: "off",
+      modeModels: {
+        low: { model: "acme/cheap", thinking: "low" },
+        medium: { model: "acme/mid", thinking: "medium" },
+        high: { model: "acme/mid", thinking: "high" },
+        ultra: { model: "acme/top", thinking: "high" },
+      },
+    } }));
+    return harness;
+  }
+  const toolCall = (id: string) => ({
+    role: "assistant", api: "openai-completions", provider: "acme", model: "cheap",
+    content: [{ type: "toolCall", id, name: "bash", arguments: { command: "npm test" } }],
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "toolUse", timestamp: Date.now(),
+  });
+  const failure = (id: string, what: string) => ({
+    role: "toolResult", toolCallId: id, toolName: "bash", isError: false, timestamp: Date.now(),
+    content: [{ type: "text", text: `FAIL src/${what}.test.ts\n  1 failed, 4 passed` }],
+  });
+  const lastStatus = (ctx: ExtensionContext) => String(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)?.[1] ?? "");
+
+  it("moves a struggling turn to the next tier after three failing test runs", async () => {
+    const { handlers, initialProvider, routerModel, ctx, sessionId } = escalationHarness();
+    await handlers.get("session_start")!({}, ctx);
+    const messages: any[] = [{ role: "user", content: "fix the failing test", timestamp: Date.now() }];
+    const step = async () => {
+      for await (const _event of initialProvider.streamSimple!(routerModel, { messages: [...messages] } as Context, { sessionId })) {
+        // Consume the stream so the router's selection finishes.
+      }
+    };
+
+    await step();
+    expect(lastStatus(ctx)).toMatch(/cheap/);
+    for (const [i, what] of ["parser", "lexer"].entries()) {
+      messages.push(toolCall(`c${i}`), failure(`c${i}`, what));
+      await step();
+    }
+    expect(lastStatus(ctx)).toMatch(/cheap/);
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("escalating"), "info");
+
+    messages.push(toolCall("c2"), failure("c2", "emitter"));
+    await step();
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("escalating low → high"), "info");
+    expect(lastStatus(ctx)).toMatch(/mid/);
+  });
+
+  it("never overrides an explicit one-turn route", async () => {
+    const { handlers, initialProvider, routerModel, ctx, sessionId } = escalationHarness();
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("input")!({ source: "interactive", text: "@route:low fix the failing test" }, ctx);
+    const messages: any[] = [{ role: "user", content: "fix the failing test", timestamp: Date.now() }];
+    // Step through the turn as Pi does: the one-turn route is consumed by the first request, and the
+    // tool-call continuations reuse the turn's forced decision. Escalation must not override it.
+    const step = async () => {
+      for await (const _event of initialProvider.streamSimple!(routerModel, { messages: [...messages] } as Context, { sessionId })) {
+        // Consume the stream.
+      }
+    };
+    await step();
+    for (const [i, what] of ["parser", "lexer", "emitter", "loader"].entries()) {
+      messages.push(toolCall(`c${i}`), failure(`c${i}`, what));
+      await step();
+    }
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("escalating"), "info");
+    expect(lastStatus(ctx)).toMatch(/cheap/);
+  });
+});

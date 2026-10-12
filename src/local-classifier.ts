@@ -2,6 +2,7 @@ import { env, pipeline, type TextClassificationPipeline } from "@huggingface/tra
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripHostReminders } from "./router-core.ts";
 
 export type LocalComplexityLabel = "LOW" | "MEDIUM" | "HIGH";
 export interface LocalClassification {
@@ -45,12 +46,7 @@ export async function disposeLocalClassifier(): Promise<void> {
   }
 }
 
-// Hosts such as omp prepend <system-reminder> blocks (date, cwd) to the user message. They are not
-// part of the request, and with a 128-token window they shift the label and truncate the real prompt.
-export function classifierInput(text: string): string {
-  const stripped = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
-  return stripped || text;
-}
+export const classifierInput = stripHostReminders;
 
 export async function classifyLocally(text: string): Promise<LocalClassification> {
   const run = await classifier();
