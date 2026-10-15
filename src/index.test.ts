@@ -504,3 +504,51 @@ describe("in-session escalation", () => {
     expect(lastStatus(ctx)).toMatch(/cheap/);
   });
 });
+
+describe("sessions the router was not told about", () => {
+  const routerErrors = async (stream: AsyncIterable<any>) => {
+    const errors: string[] = [];
+    for await (const event of stream) {
+      const message = event.message ?? event.error;
+      if (message?.errorMessage?.startsWith("Pi Router:")) errors.push(message.errorMessage);
+    }
+    return errors;
+  };
+
+  it("handles input for a session whose session_start it never saw", async () => {
+    const { handlers, ctx } = createHarness(model("acme", "solo", 200_000), [], undefined, "never-started");
+    await expect(handlers.get("input")!({ source: "interactive", text: "hello" }, ctx)).resolves.toEqual({ action: "continue" });
+  });
+
+  it("routes omp side calls through the parent without disturbing the parent's turn", async () => {
+    const target = model("magi-codex", "gpt-5.6-sol", 272_000);
+    const parent = createHarness(target, [], undefined, "side-parent");
+    const other = createHarness(target, [], undefined, "side-other");
+    await parent.handlers.get("session_start")!({}, parent.ctx);
+    await other.handlers.get("session_start")!({}, other.ctx);
+    await parent.handlers.get("input")!({ source: "interactive", text: "@route:ultra inspect this" }, parent.ctx);
+
+    const side = parent.initialProvider.streamSimple!(parent.routerModel,
+      { messages: [{ role: "user", content: "summarise the session so far", timestamp: Date.now() }] } as Context,
+      { sessionId: "side-parent:side:15a6dd8238b4ae2d" });
+    expect(await routerErrors(side)).toEqual([]);
+
+    // The parent's one-turn route must still apply to its own next request.
+    vi.mocked(parent.ctx.ui.setStatus).mockClear();
+    const own = parent.initialProvider.streamSimple!(parent.routerModel,
+      { messages: [{ role: "user", content: "inspect this", timestamp: Date.now() }] } as Context, { sessionId: "side-parent" });
+    expect(await routerErrors(own)).toEqual([]);
+    expect(parent.ctx.ui.setStatus).toHaveBeenCalledWith("router", expect.stringMatching(/^ONCE Ultra/));
+  });
+
+  it("does not fail a request whose session id it cannot match", async () => {
+    const target = model("magi-codex", "gpt-5.6-sol", 272_000);
+    const a = createHarness(target, [], undefined, "unmatched-a");
+    const b = createHarness(target, [], undefined, "unmatched-b");
+    await a.handlers.get("session_start")!({}, a.ctx);
+    await b.handlers.get("session_start")!({}, b.ctx);
+    const stream = a.initialProvider.streamSimple!(a.routerModel,
+      { messages: [{ role: "user", content: "recap", timestamp: Date.now() }] } as Context, { sessionId: "some-subagent-xyz" });
+    expect(await routerErrors(stream)).toEqual([]);
+  });
+});
