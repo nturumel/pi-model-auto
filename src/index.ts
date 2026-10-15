@@ -129,12 +129,16 @@ interface RouterSessionState {
   classifierState: ClassifierState;
   localClassifierErrorShown: boolean;
   escalation: EscalationState;
+  /** A throwaway copy used for omp side calls (recaps, probes); never touches the UI or the parent's turn. */
+  side?: boolean;
 }
 
 interface RouterProcessState {
   sessions: Map<RouterSessionKey, RouterSessionState>;
   sessionKeysById: Map<string, RouterSessionKey>;
   memorySessionSequence: number;
+  /** Most recently started session; routes calls whose session id the router cannot match. */
+  lastStartedKey?: RouterSessionKey;
 }
 
 const ROUTER_PROCESS_STATE_KEY = "__pi_model_auto_router_process_state_v1__" as const;
@@ -251,6 +255,11 @@ export default function modelRouter(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    startSession(ctx);
+  });
+
+  /** Build and register router state for ctx's session (also used when session_start was missed). */
+  function startSession(ctx: ExtensionContext): RouterSessionState {
     const cfg = loadConfig(ctx);
     const cliRoute = pi.getFlag("route");
     const cliForcedRoute = typeof cliRoute === "string" ? parseRouteHint(cliRoute) : undefined;
@@ -278,6 +287,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     sessions.set(key, state);
     sessionKeysById.set(sessionId, key);
     ownedSessions.set(key, sessionId);
+    processState.lastStartedKey = key;
     if (!autocompleteContexts.has(ctx)) {
       autocompleteContexts.add(ctx);
       ctx.ui.addAutocompleteProvider((current) => ({
@@ -338,7 +348,8 @@ export default function modelRouter(pi: ExtensionAPI) {
     );
 
     updateRouterStatus(ctx, state.pool.all.length === 0 ? "No routed models" : readyStatus(state.stickyRoute, state.lastDecision, state.quota));
-  });
+    return state;
+  }
 
   pi.on("model_select", async (event, ctx) => {
     const state = sessionStateById(ctx.sessionManager.getSessionId());
@@ -369,8 +380,8 @@ export default function modelRouter(pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event, ctx) => {
-    const state = sessionState(ctx);
     if (event.source === "extension") return { action: "continue" };
+    const state = sessionState(ctx);
 
     const parsed = parseForcedRoute(event.text);
     const initialTurn = isInitialUserTurn(ctx);
@@ -475,7 +486,7 @@ export default function modelRouter(pi: ExtensionAPI) {
         if (!auth.ok) throw new Error(auth.error);
         const planKey = quotaPlans.get(modelKey(target))?.planKey ?? modelPlanKey(target, auth);
 
-        syncRouterContextWindow(target.contextWindow, cfg.modeModels.medium?.model);
+        if (!state.side) syncRouterContextWindow(target.contextWindow, cfg.modeModels.medium?.model);
 
         const configuredMode = decision.cls === "model" ? undefined : cfg.modeModels[decision.cls];
         const requestedReasoning = routingReasoning(
@@ -505,7 +516,7 @@ export default function modelRouter(pi: ExtensionAPI) {
         };
         state.lastDecision = streamDecision;
 
-        updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
+        if (!state.side) updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
         logDecision(ctx, cfg, streamDecision);
 
         const inner = aiStreamSimple(target, context, {
@@ -522,7 +533,7 @@ export default function modelRouter(pi: ExtensionAPI) {
             recordQuotaChange(ctx, cfg, quota, planKey, () =>
               quota.recordResponse(planKey, response.status, response.headers, target.provider, Date.now()),
             );
-            updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
+            if (!state.side) updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
           },
         });
 
@@ -531,7 +542,7 @@ export default function modelRouter(pi: ExtensionAPI) {
             recordQuotaChange(ctx, cfg, quota, planKey, () =>
               quota.recordRateLimited(planKey, undefined, undefined, Date.now()),
             );
-            updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
+            if (!state.side) updateRouterStatus(ctx, activeStatus(streamDecision, quota, statusRoute, oneTurnRoute));
           }
 
           stream.push(event);
@@ -542,7 +553,7 @@ export default function modelRouter(pi: ExtensionAPI) {
           if (event.type === "done" || event.type === "error") {
             logTerminalEvent(ctx, cfg, streamDecision, event);
             state.forcedRoute = undefined;
-            updateRouterStatus(ctx, settledStatus(streamDecision, quota, state.stickyRoute));
+            if (!state.side) updateRouterStatus(ctx, settledStatus(streamDecision, quota, state.stickyRoute));
           }
         }
         stream.end();
@@ -550,7 +561,7 @@ export default function modelRouter(pi: ExtensionAPI) {
       } catch (error) {
         if (activeState) {
           activeState.forcedRoute = undefined;
-          updateRouterStatus(
+          if (!activeState.side) updateRouterStatus(
             activeState.ctx,
             readyStatus(activeState.stickyRoute, activeState.lastDecision, activeState.quota),
           );
@@ -669,7 +680,7 @@ export default function modelRouter(pi: ExtensionAPI) {
     if (result.reset && cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), escalation: "reset" });
     if (result.raised) {
       const { from, to, reason } = result.raised;
-      ctx.ui.notify(`Pi Router: escalating ${from} → ${to} (${reason}).`, "info");
+      if (!state.side) ctx.ui.notify(`Pi Router: escalating ${from} → ${to} (${reason}).`, "info");
       if (cfg.log) appendJsonLine(ctx, { ts: new Date().toISOString(), escalation: { from, to, reason } });
     }
     if (!isAbove(result.floor, decision.cls)) return decision;
@@ -768,14 +779,28 @@ export default function modelRouter(pi: ExtensionAPI) {
 
   function sessionState(ctx: ExtensionContext): RouterSessionState {
     const sessionId = ctx.sessionManager.getSessionId();
-    const state = sessionStateById(sessionId);
-    if (!state) throw new Error(`Pi Router: session state not initialized: ${sessionId}`);
-    return state;
+    // Pi can deliver events for a session whose session_start this extension never saw (for example
+    // after a reload or for a subagent); start it on demand rather than failing the event.
+    return sessionStateById(sessionId) ?? startSession(ctx);
   }
 
   function sessionStateById(sessionId: string): RouterSessionState | undefined {
     const key = sessionKeysById.get(sessionId);
     return key ? sessions.get(key) : undefined;
+  }
+
+  /** Same config, pool and quota as the parent; fresh per-turn state so side traffic cannot alter the parent's turn. */
+  function sideState(parent: RouterSessionState): RouterSessionState {
+    return {
+      ...parent,
+      forcedRoute: undefined,
+      turnSelection: undefined,
+      lastDecision: undefined,
+      routingState: createRoutingState(),
+      classifierState: createClassifierState(),
+      escalation: createEscalationState(),
+      side: true,
+    };
   }
 
   function routerSessionKey(ctx: ExtensionContext, memorySequence: number): RouterSessionKey {
@@ -788,6 +813,10 @@ export default function modelRouter(pi: ExtensionAPI) {
     if (options?.sessionId) {
       const state = sessionStateById(options.sessionId);
       if (state) return state;
+      // omp side calls (subagent completion probes, idle recaps) use "<session>:side:<hash>".
+      const side = options.sessionId.indexOf(":side:");
+      const parent = side > 0 ? sessionStateById(options.sessionId.slice(0, side)) : undefined;
+      if (parent) return sideState(parent);
     }
 
     const turnKey = routingTurnKey(context);
@@ -797,6 +826,9 @@ export default function modelRouter(pi: ExtensionAPI) {
     });
     if (matching.length === 1) return matching[0];
     if (sessions.size === 1) return sessions.values().next().value!;
+    const latest = processState.lastStartedKey ? sessions.get(processState.lastStartedKey) : undefined;
+    const fallback = latest ?? [...sessions.values()].at(-1);
+    if (fallback) return sideState(fallback);
 
     const suffix = options?.sessionId ? `: ${options.sessionId}` : "";
     throw new Error(`Pi Router: no matching session state${suffix}`);
